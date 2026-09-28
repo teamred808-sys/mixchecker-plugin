@@ -149,8 +149,9 @@ MixCheckerEditor::MixCheckerEditor(MixCheckerProcessor& p)
         juce::PopupMenu menu;
         menu.addItem(1, "Automatic address");
         for (int i = 0; i < addresses.size(); ++i) menu.addItem(i + 2, addresses[i]);
+                juce::Component::SafePointer<MixCheckerEditor> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&networkBtn),
-            [safe = juce::Component::SafePointer<MixCheckerEditor>(this), addresses](int choice) mutable {
+                        [safe, addresses](int choice) mutable {
                 if (safe == nullptr || choice == 0) return;
                 safe->audioProcessor.selectNetworkAddress(choice == 1 ? juce::String() : addresses[choice - 2]);
                 safe->regenerateQrImage();
