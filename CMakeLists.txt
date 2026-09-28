@@ -3,7 +3,7 @@ if(POLICY CMP0175)
     cmake_policy(SET CMP0175 OLD)
     set(CMAKE_POLICY_DEFAULT_CMP0175 OLD)
 endif()
-project(MixChecker VERSION 2.0.0)
+project(MixChecker VERSION 2.2.0)
 
 option(MIXCHECKER_BUILD_VST3 "Build the MixChecker VST3 plugin" ON)
 option(MIXCHECKER_BUILD_AAX "Build the MixChecker AAX plugin when AAX SDK/PACE tooling is configured" OFF)
@@ -109,6 +109,10 @@ target_link_libraries(MixChecker PRIVATE
 
 if(MIXCHECKER_BUILD_TESTS)
     enable_testing()
+    add_executable(MixCheckerConnectionTests Tests/PluginConnectionTests.cpp)
+    target_link_libraries(MixCheckerConnectionTests PRIVATE MixChecker juce::juce_audio_utils)
+    add_test(NAME MixCheckerConnectionTests COMMAND MixCheckerConnectionTests)
+    set_tests_properties(MixCheckerConnectionTests PROPERTIES SKIP_RETURN_CODE 77)
 
     juce_add_console_app(MixCheckerUpdateCheckerTests
         PRODUCT_NAME "MixCheckerUpdateCheckerTests"

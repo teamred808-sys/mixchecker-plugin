@@ -50,6 +50,7 @@ public:
     };
 
     explicit PluginUpdateChecker(juce::String currentPluginVersion);
+    PluginUpdateChecker(juce::String currentPluginVersion, std::unique_ptr<juce::PropertiesFile> settingsFile);
     ~PluginUpdateChecker() override;
 
     void startCheckIfDue(juce::int64 nowMillis = juce::Time::currentTimeMillis());

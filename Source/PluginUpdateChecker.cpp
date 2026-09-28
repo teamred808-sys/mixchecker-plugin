@@ -4,6 +4,7 @@ namespace {
 
 static constexpr const char* lastCheckKey = "lastUpdateCheckTimestamp";
 static constexpr const char* dismissedVersionKey = "dismissedUpdateVersion";
+static constexpr const char* installedVersionKey = "installedPluginVersion";
 
 bool parseSemanticVersion(const juce::String& version, int (&parts)[3]) {
     parts[0] = 0;
@@ -19,8 +20,10 @@ bool parseSemanticVersion(const juce::String& version, int (&parts)[3]) {
         if (token.isEmpty())
             return false;
 
+        if (token.length() > 9)
+            return false;
         for (auto character : token) {
-            if (! juce::CharacterFunctions::isDigit(character))
+            if (character < '0' || character > '9')
                 return false;
         }
 
@@ -122,7 +125,9 @@ UpdateEvaluation evaluateUpdateJson(const juce::String& jsonText,
     if (! enabled)
         return evaluation;
 
-    if (latestVersion == dismissedVersion.trim())
+    if (parseSemanticVersion(dismissedVersion, parsedCurrent)
+        && ! isSemanticVersionGreater(latestVersion, dismissedVersion)
+        && ! isSemanticVersionGreater(dismissedVersion, latestVersion))
         return evaluation;
 
     evaluation.updateAvailable = isSemanticVersionGreater(latestVersion, currentVersion);
@@ -132,12 +137,26 @@ UpdateEvaluation evaluateUpdateJson(const juce::String& jsonText,
 } // namespace MixCheckerUpdate
 
 PluginUpdateChecker::PluginUpdateChecker(juce::String currentPluginVersion)
+    : PluginUpdateChecker(std::move(currentPluginVersion), createPropertiesFile()) {}
+
+PluginUpdateChecker::PluginUpdateChecker(juce::String currentPluginVersion,
+                                         std::unique_ptr<juce::PropertiesFile> settingsFile)
     : Thread("MixCheckerPluginUpdateChecker"),
       currentVersion(std::move(currentPluginVersion)),
-      properties(createPropertiesFile()) {
+      properties(std::move(settingsFile)) {
     if (properties != nullptr) {
         snapshot.lastCheckedAtMillis = static_cast<juce::int64>(properties->getDoubleValue(lastCheckKey, 0.0));
         dismissedUpdateVersion = properties->getValue(dismissedVersionKey).trim();
+        // The binary's JUCE version is authoritative. A newly installed binary
+        // invalidates the old version's 24-hour check cache and dismissal.
+        if (properties->getValue(installedVersionKey).trim() != currentVersion) {
+            snapshot.lastCheckedAtMillis = 0;
+            dismissedUpdateVersion.clear();
+            properties->setValue(lastCheckKey, 0);
+            properties->setValue(dismissedVersionKey, juce::String());
+            properties->setValue(installedVersionKey, currentVersion);
+            properties->saveIfNeeded();
+        }
     }
 }
 

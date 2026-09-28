@@ -32,16 +32,24 @@ jobs:
           -DMIXCHECKER_BUILD_TESTS=ON
 
       - name: Build VST3 and tests
-        run: cmake --build build --config Release --target MixChecker_VST3 MixCheckerUpdateCheckerTests
+        run: cmake --build build --config Release --target MixChecker_VST3 MixCheckerUpdateCheckerTests MixCheckerConnectionTests
 
       - name: Run tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Verify VST3 output
+      - name: Verify VST3 output and version
         shell: pwsh
         run: |
           $plugin = "build/MixChecker_artefacts/Release/VST3/MixChecker.vst3"
           if (-not (Test-Path $plugin)) { throw "Expected VST3 bundle was not produced: $plugin" }
+          $cmake = Get-Content CMakeLists.txt -Raw
+          if ($cmake -notmatch '(?m)^project\(MixChecker\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\)') { throw "Missing project version" }
+          $expected = $Matches[1]
+          $manifest = Join-Path $plugin 'Contents/Resources/moduleinfo.json'
+          if (-not (Test-Path $manifest)) { throw "Expected VST3 moduleinfo.json: $manifest" }
+          $moduleText = Get-Content $manifest -Raw
+          if ($moduleText -notmatch [regex]::Escape($expected)) { throw "VST3 metadata does not contain version $expected" }
+          Write-Host "Built MixChecker Windows VST3 version $expected"
 
       - name: Upload unsigned VST3
         id: upload

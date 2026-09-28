@@ -1,3 +1,9 @@
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#endif
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <cmath>
@@ -182,7 +188,7 @@ static std::vector<char> buildDiscoveryResponse(const juce::String& pluginIp,
 }
 
 static int scoreLocalIpv4(const juce::String& ip) {
-    if (ip.isEmpty() || ip == "0.0.0.0" || ip == "127.0.0.1" || ip.containsChar(':'))
+    if (ip.isEmpty() || ip == "0.0.0.0" || ip.startsWith("127.") || ip.containsChar(':'))
         return -1000;
     if (ip.startsWith("169.254."))
         return -200;
@@ -214,6 +220,36 @@ static bool sameSlash24(const juce::String& a, const juce::String& b) {
         && pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2];
 }
 
+// UDP connect selects a route without sending application data. Prefer Windows'
+// actual return interface to the phone over address-prefix guesses on multi-NIC PCs.
+static juce::String routedLocalAddress(const juce::String& peer) {
+   #if JUCE_WINDOWS
+    if (peer.isEmpty()) return {};
+    sockaddr_in remote{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(49320);
+    remote.sin_addr.s_addr = inet_addr(peer.toRawUTF8());
+    if (remote.sin_addr.s_addr == INADDR_NONE) return {};
+    const auto probe = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (probe == INVALID_SOCKET) return {};
+    juce::String result;
+    if (::connect(probe, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) == 0) {
+        sockaddr_in local{};
+        int size = sizeof(local);
+        if (::getsockname(probe, reinterpret_cast<sockaddr*>(&local), &size) == 0) {
+            const auto host = ntohl(local.sin_addr.s_addr);
+            result = juce::String((int)(host >> 24)) + "." + juce::String((int)((host >> 16) & 255))
+                + "." + juce::String((int)((host >> 8) & 255)) + "." + juce::String((int)(host & 255));
+        }
+    }
+    ::closesocket(probe);
+    return result;
+   #else
+    juce::ignoreUnused(peer);
+    return {};
+   #endif
+}
+
 // preferSubnetOf: the source IP of the most recent discovery request from the app. The phone has
 // told us which subnet it lives on, and an adapter on that subnet beats every static heuristic
 // (multi-NIC PCs with VM/hotspot adapters otherwise advertise an IP the phone can't reach).
@@ -222,6 +258,7 @@ static bool sameSlash24(const juce::String& a, const juce::String& b) {
 static juce::String chooseBestLocalIpv4(const juce::String& preferSubnetOf,
                                         const juce::String& previousSelection = {}) {
     auto addresses = juce::IPAddress::getAllAddresses(false);
+    const auto routedIp = routedLocalAddress(preferSubnetOf);
     juce::String bestIp;
     int bestScore = -1001;
 
@@ -231,6 +268,7 @@ static juce::String chooseBestLocalIpv4(const juce::String& preferSubnetOf,
         int score = scoreLocalIpv4(ip);
         if (score > -200 && sameSlash24(ip, preferSubnetOf))
             score += 1000;
+        if (score >= 0 && ip == routedIp) score += 2000;
         candidates.add(ip + " score=" + juce::String(score));
         if (score > bestScore) {
             bestScore = score;
@@ -245,7 +283,7 @@ static juce::String chooseBestLocalIpv4(const juce::String& preferSubnetOf,
         juce::Logger::writeToLog("MixChecker local IPv4 candidates: " + candidates.joinIntoString(", ")
                                + " | selected=" + bestIp
                                + (preferSubnetOf.isNotEmpty() ? " | phoneSubnetHint=" + preferSubnetOf : juce::String())
-                               + " | hotspot hint: allow DAW/Mix Checker through Windows Firewall on Private/Public networks if pairing fails.");
+                               + " | pairing help: select the LAN IP; allow the actual DAW host on a trusted Private network.");
     }
     return bestIp;
 }
@@ -622,8 +660,14 @@ MixCheckerProcessor::MixCheckerProcessor()
         tokenHex += juce::String::toHexString(rng.nextInt(16));
     pairingToken = tokenHex;
 
-    // Try to bind socket to port 49320
-    if (socket.bindToPort(49320, "0.0.0.0")) {
+    // Do not silently share control packets between DAWs/plugin instances.
+    bool exclusive = socket.setEnablePortReuse(false);
+   #if JUCE_WINDOWS
+    const BOOL enabled = TRUE;
+    exclusive = exclusive && setsockopt(static_cast<SOCKET>(socket.getRawSocketHandle()),
+        SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&enabled), sizeof(enabled)) == 0;
+   #endif
+    if (exclusive && socket.bindToPort(49320, "0.0.0.0")) {
         socketBound = true;
         localIp = chooseBestLocalIpv4({});
         networkThread.startThread();
@@ -710,6 +754,7 @@ void MixCheckerProcessor::setStreaming(bool shouldStream) {
 }
 
 juce::String MixCheckerProcessor::getQrPayload() {
+    if (!socketBound) return {}; // Never present a scannable but unusable pairing code.
     // The advertised IP was historically frozen at plugin load, so a network that came up later
     // (hotspot enabled after the DAW, VPN toggled, adapter switched) left a dead IP in the QR
     // forever. The editor polls this method, so refresh here — rate-limited, and preferring the
@@ -733,15 +778,43 @@ juce::String MixCheckerProcessor::getQrPayload() {
                 previous = localIp;
             }
             auto refreshed = chooseBestLocalIpv4(subnetHint, previous); // enumerates NICs — outside the lock
+            const auto available = getAvailableNetworkAddresses();
             juce::ScopedLock sl(ipLock);
-            localIp = refreshed;
+            localIp = selectedNetworkAddress.isEmpty() ? refreshed
+                : (available.contains(selectedNetworkAddress) ? selectedNetworkAddress : juce::String());
         }
     }
 
     juce::ScopedLock sl(ipLock);
+    if (scoreLocalIpv4(localIp) < 0) return {};
     return "mixchecker://pair?v=1&host=" + localIp
          + "&port=49320&session=" + juce::String((int)currentSessionId.load())
          + "&token=" + pairingToken;
+}
+
+juce::StringArray MixCheckerProcessor::getAvailableNetworkAddresses() const {
+    juce::StringArray result;
+    for (const auto& address : juce::IPAddress::getAllAddresses(false)) {
+        const auto ip = address.toString();
+        if (scoreLocalIpv4(ip) >= 0) result.addIfNotAlreadyThere(ip);
+    }
+    return result;
+}
+
+void MixCheckerProcessor::selectNetworkAddress(const juce::String& address) {
+    if (address.isNotEmpty() && !getAvailableNetworkAddresses().contains(address)) return;
+    juce::ScopedLock sl(ipLock);
+    selectedNetworkAddress = address;
+    lastIpRefreshMs = 0;
+}
+
+juce::String MixCheckerProcessor::getNetworkProblem() const {
+    if (!socketBound)
+        return "Cannot reserve UDP 49320. Close other MixChecker instances/DAWs, then reload this plugin. Other software may also own the port.";
+    juce::ScopedLock sl(ipLock);
+    if (scoreLocalIpv4(localIp) < 0)
+        return "No usable IPv4 address. Connect to your trusted LAN or choose another address using Network / IP.";
+    return {};
 }
 
 juce::String MixCheckerProcessor::getPairingToken() const { return pairingToken; }

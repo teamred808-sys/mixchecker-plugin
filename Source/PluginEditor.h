@@ -44,6 +44,8 @@ private:
 
     CherryButton playBtn{"Start", false};
     CherryButton checkUpdateBtn{"Check Update", true};
+    CherryButton networkBtn{"Network / IP", true};
+    CherryButton networkHelpBtn{"Connection help", true};
     CherryButton updateOpenWebsiteBtn{"Open Website", true};
     CherryButton updateDismissBtn{"Dismiss", true};
     PluginUpdateChecker updateChecker;

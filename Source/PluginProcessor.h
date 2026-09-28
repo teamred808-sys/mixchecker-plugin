@@ -78,6 +78,9 @@ public:
     juce::String getPairingToken() const;
     uint16_t getSessionId() const;
     int getActiveQualityMode() const;
+    juce::StringArray getAvailableNetworkAddresses() const;
+    void selectNetworkAddress(const juce::String& address);
+    juce::String getNetworkProblem() const;
 
 private:
     class NetworkThread : public juce::Thread {
@@ -112,6 +115,7 @@ private:
     // (discovery replies); lastDiscoverySenderIp flows the opposite way. Both go under ipLock.
     juce::String localIp;
     juce::String lastDiscoverySenderIp;
+    juce::String selectedNetworkAddress; // Empty means automatic; deliberately not saved in DAW projects.
     mutable juce::CriticalSection ipLock;
     double lastIpRefreshMs = 0.0;
     bool socketBound = false;

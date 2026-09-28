@@ -98,6 +98,11 @@ void SegmentedControl::mouseDown(const juce::MouseEvent& e) {
 
 void MixCheckerEditor::regenerateQrImage() {
     auto payload = audioProcessor.getQrPayload();
+    if (payload.isEmpty()) {
+        qrImage = {};
+        lastQrPayload.clear();
+        return;
+    }
     if (payload == lastQrPayload && qrImage.isValid())
         return;
     lastQrPayload = payload;
@@ -135,8 +140,31 @@ MixCheckerEditor::MixCheckerEditor(MixCheckerProcessor& p)
       audioProcessor(p),
       updateChecker(JucePlugin_VersionString)
 {
-    setSize(520, 420);
+    setSize(520, 480);
     editorOpenedAtMs = juce::Time::getMillisecondCounter();
+    addAndMakeVisible(networkBtn);
+    addAndMakeVisible(networkHelpBtn);
+    networkBtn.onClick = [this] {
+        const auto addresses = audioProcessor.getAvailableNetworkAddresses();
+        juce::PopupMenu menu;
+        menu.addItem(1, "Automatic address");
+        for (int i = 0; i < addresses.size(); ++i) menu.addItem(i + 2, addresses[i]);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&networkBtn),
+            [safe = juce::Component::SafePointer<MixCheckerEditor>(this), addresses](int choice) {
+                if (safe == nullptr || choice == 0) return;
+                safe->audioProcessor.selectNetworkAddress(choice == 1 ? juce::String() : addresses[choice - 2]);
+                safe->regenerateQrImage();
+                safe->repaint();
+            });
+    };
+    networkHelpBtn.onClick = [this] {
+        auto problem = audioProcessor.getNetworkProblem();
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "MixChecker connection help",
+            problem + "\nPC address: " + audioProcessor.getLocalIpAddress()
+            + "\nUDP port: 49320\n\nChoose your real Wi-Fi/Ethernet IPv4 under Network / IP if a VPN or virtual adapter was selected. Scan the current QR after changing it."
+              "\n\nKeep PC and phone on a reachable trusted LAN. Try QR/manual IP if Nearby discovery is filtered. Guest Wi-Fi/client isolation must be changed on the router or avoided using your own hotspot."
+              "\n\nOn Windows, run the installer firewall repair for the actual DAW/bridge EXE on a trusted Private network. Never disable your firewall. Use only one MixChecker instance.");
+    };
     
     addAndMakeVisible(latencySelector);
     addAndMakeVisible(modeSelector);
@@ -193,7 +221,8 @@ void MixCheckerEditor::paint(juce::Graphics& g) {
     // 2. Header
     g.setColour(Style::fg);
     g.setFont(18.0f);
-    g.drawText("Mix Checker", 20, 15, 200, 24, juce::Justification::centredLeft, true);
+    g.drawText("Mix Checker  v" + juce::String(JucePlugin_VersionString), 20, 15, 260, 24,
+               juce::Justification::centredLeft, true);
     g.setColour(Style::fgMuted);
     g.setFont(12.0f);
     g.drawText("Real phone monitoring", 20, 35, 200, 14, juce::Justification::centredLeft, true);
@@ -232,6 +261,11 @@ void MixCheckerEditor::paint(juce::Graphics& g) {
         juce::Rectangle<float> qrDrawArea(qrAreaX + padding, qrAreaY + padding,
                                            qrAreaSize - padding * 2, qrAreaSize - padding * 2);
         g.drawImage(qrImage, qrDrawArea, juce::RectanglePlacement::centred);
+    } else {
+        g.setColour(juce::Colours::black);
+        g.setFont(14.0f);
+        g.drawFittedText("Connection unavailable\nOpen Connection help", juce::Rectangle<int>(
+            (int)qrAreaX + 10, (int)qrAreaY + 10, 130, 130), juce::Justification::centred, 5);
     }
 
     // 6. Pairing Details text
@@ -309,6 +343,8 @@ void MixCheckerEditor::paint(juce::Graphics& g) {
 }
 
 void MixCheckerEditor::resized() {
+    networkBtn.setBounds(20, 438, 220, 28);
+    networkHelpBtn.setBounds(255, 438, 245, 28);
     latencySelector.setBounds(20, 260, getWidth() / 2 - 26, 60);
     modeSelector.setBounds(getWidth() / 2 + 6, 260, getWidth() / 2 - 26, 60);
     const bool updateVisible = isUpdateBannerVisible();
@@ -354,7 +390,7 @@ bool MixCheckerEditor::isUpdateBannerVisible() const {
 }
 
 juce::Rectangle<int> MixCheckerEditor::getUpdateBannerBounds() const {
-    return { 20, getHeight() - 48, getWidth() - 40, 36 };
+    return { 20, 372, getWidth() - 40, 36 }; // Keep the new network controls unobstructed.
 }
 
 void MixCheckerEditor::syncUpdateBannerControls() {
